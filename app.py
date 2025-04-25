@@ -1,14 +1,15 @@
-import streamlit as st
-import tempfile
-import shutil
-import os
-from typing import List
+import sys, pysqlite3
+sys.modules["sqlite3"] = pysqlite3
 
+import streamlit as st
+from typing import List
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
+import tempfile
+import os
 
 if 'api_key_valid' not in st.session_state:
     st.session_state.api_key_valid = False
@@ -42,16 +43,13 @@ class ChromaEmbeddingFunction:
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self.__call__(texts)
 
-st.title("Assistente de Análise de Documentos PDF")
+st.title("Assistente de análise de documentos PDF")
 
-uploaded_file = st.file_uploader("Upload do PDF", type=["pdf"])
+uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
 if uploaded_file:
     if st.session_state.openai_api_key and st.session_state.api_key_valid:
-        shutil.rmtree("chroma_db", ignore_errors=True)
-        os.makedirs("chroma_db", exist_ok=True)
-
-        with st.spinner("Ingerindo o PDF..."):
+        with st.spinner("Ingerindo PDF..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.getbuffer())
                 tmp_path = tmp_file.name
@@ -62,18 +60,16 @@ if uploaded_file:
             openai_embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
             chroma_func = ChromaEmbeddingFunction(openai_embeddings)
 
-            chroma_vec = Chroma.from_documents(
+            vectordb = Chroma.from_documents(
                 docs,
-                embedding=chroma_func,
-                persist_directory="chroma_db",
-                collection_name="pdf_collection"
+                embedding=chroma_func
             )
 
             st.success("PDF ingerido com sucesso! 📄")
 
         qa_chain = RetrievalQA.from_chain_type(
             llm=ChatOpenAI(openai_api_key=st.session_state.openai_api_key, model_name="gpt-3.5-turbo"),
-            retriever=chroma_vec.as_retriever()
+            retriever=vectordb.as_retriever()
         )
 
         query = st.text_input("Digite sua pergunta sobre o PDF:")
