@@ -7,3 +7,4 @@ langchain-community==0.3.22
 langchain-openai==0.3.14
 chromadb==0.4.24
 hnswlib>=0.7.0,<0.8.0
+numpy==1.26.4
