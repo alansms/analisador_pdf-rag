@@ -14,17 +14,14 @@ import tempfile
 import os
 import shutil
 
-# Estados iniciais
 if 'api_key_valid' not in st.session_state:
     st.session_state.api_key_valid = False
 
 if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = ""
 
-# Tela
 st.title("Assistente de análise de documentos PDF")
 
-# Input da chave OpenAI
 openai_api_key = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
 
 if st.session_state.openai_api_key and not st.session_state.api_key_valid:
@@ -36,7 +33,6 @@ if st.session_state.openai_api_key and not st.session_state.api_key_valid:
         st.error("Chave inválida ou sem acesso ao modelo. ❌")
         st.session_state.api_key_valid = False
 
-# Função adaptadora para embeddings
 class ChromaEmbeddingFunction:
     def __init__(self, embedding_function):
         self.embedding_function = embedding_function
@@ -52,7 +48,6 @@ class ChromaEmbeddingFunction:
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self.__call__(texts)
 
-# Upload PDF
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
 
 if uploaded_file:
@@ -74,7 +69,7 @@ if uploaded_file:
             client_settings = Settings(
                 chroma_db_impl="duckdb+parquet",
                 persist_directory="chroma_db",
-            ).to_dict()
+            )
 
             chroma_vec = Chroma.from_documents(
                 docs,
