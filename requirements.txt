@@ -18,4 +18,4 @@ langchain-community==0.3.22
 chromadb==0.4.24
 hnswlib>=0.7.0,<0.8.0
 - numpy==2.2.5
-+ numpy==1.25.3
++ numpy<2.0  # ou numpy==1.25.3
