@@ -1,6 +1,3 @@
-import sys, pysqlite3
-sys.modules["sqlite3"] = pysqlite3
-
 import streamlit as st
 import tempfile
 import shutil
@@ -19,7 +16,6 @@ if 'api_key_valid' not in st.session_state:
 if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = ""
 
-# Get OpenAI API key from user
 openai_api_key = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
 
 if st.session_state.openai_api_key and not st.session_state.api_key_valid:
