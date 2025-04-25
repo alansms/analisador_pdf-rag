@@ -1,18 +1,17 @@
-import sys
-import pysqlite3
+import sys, pysqlite3
 sys.modules["sqlite3"] = pysqlite3
 
 import streamlit as st
+import tempfile
+import shutil
+import os
 from typing import List
+
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
-from chromadb.config import Settings
-import tempfile
-import os
-import shutil
 
 if 'api_key_valid' not in st.session_state:
     st.session_state.api_key_valid = False
@@ -20,8 +19,7 @@ if 'api_key_valid' not in st.session_state:
 if 'openai_api_key' not in st.session_state:
     st.session_state.openai_api_key = ""
 
-st.title("Assistente de análise de documentos PDF")
-
+# Get OpenAI API key from user
 openai_api_key = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
 
 if st.session_state.openai_api_key and not st.session_state.api_key_valid:
@@ -29,7 +27,7 @@ if st.session_state.openai_api_key and not st.session_state.api_key_valid:
         OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key).embed_query("test")
         st.success("API key válida! ✅")
         st.session_state.api_key_valid = True
-    except Exception as e:
+    except Exception:
         st.error("Chave inválida ou sem acesso ao modelo. ❌")
         st.session_state.api_key_valid = False
 
@@ -48,14 +46,16 @@ class ChromaEmbeddingFunction:
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         return self.__call__(texts)
 
-uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+st.title("Assistente de Análise de Documentos PDF")
+
+uploaded_file = st.file_uploader("Upload do PDF", type=["pdf"])
 
 if uploaded_file:
     if st.session_state.openai_api_key and st.session_state.api_key_valid:
         shutil.rmtree("chroma_db", ignore_errors=True)
         os.makedirs("chroma_db", exist_ok=True)
 
-        with st.spinner("Ingerindo PDF..."):
+        with st.spinner("Ingerindo o PDF..."):
             with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
                 tmp_file.write(uploaded_file.getbuffer())
                 tmp_path = tmp_file.name
@@ -63,20 +63,14 @@ if uploaded_file:
             loader = PyPDFLoader(tmp_path)
             docs = loader.load()
 
-            embedder = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
-            embedding_function = ChromaEmbeddingFunction(embedder)
-
-            client_settings = Settings(
-                chroma_db_impl="duckdb+parquet",
-                persist_directory="chroma_db",
-            )
+            openai_embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
+            chroma_func = ChromaEmbeddingFunction(openai_embeddings)
 
             chroma_vec = Chroma.from_documents(
                 docs,
-                embedding=embedding_function,
-                collection_name="pdf_collection",
+                embedding=chroma_func,
                 persist_directory="chroma_db",
-                client_settings=client_settings
+                collection_name="pdf_collection"
             )
 
             st.success("PDF ingerido com sucesso! 📄")
@@ -87,7 +81,6 @@ if uploaded_file:
         )
 
         query = st.text_input("Digite sua pergunta sobre o PDF:")
-
         if st.button("Perguntar"):
             if query:
                 response = qa_chain.run(query)
@@ -96,4 +89,4 @@ if uploaded_file:
             else:
                 st.warning("Por favor, insira uma pergunta.")
     else:
-        st.warning("Por favor, insira uma chave API da OpenAI válida.")
+        st.warning("Por favor, insira uma chave válida da OpenAI.")
