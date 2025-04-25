@@ -1,103 +1,107 @@
-import sys, pysqlite3
+# app.py  ―  Streamlit PDF-RAG assistant
+# ---------------------------------------------------------------------------
+# 1) Forçar SQLite ≥ 3.35 (pysqlite3-binary) para o ChromaDB funcionar
+import sys, pysqlite3  # type: ignore
 sys.modules["sqlite3"] = pysqlite3
+
+# 2) Compatibilidade NumPy < 2.0 × ChromaDB
+import numpy as np
+if not hasattr(np, "float_"):  # presente até NumPy < 2.0
+    np.float_ = np.float64     # cria alias esperado pelo Chroma
+
+# 3) Alguns wheels do hnswlib não expõem file_handle_count; “stub” seguro
+try:
+    import hnswlib  # type: ignore
+    if not hasattr(hnswlib.Index, "file_handle_count"):
+        class _SafeIndex(hnswlib.Index):         # noqa: D101
+            @staticmethod
+            def file_handle_count() -> int:      # noqa: D401
+                return 0
+        hnswlib.Index = _SafeIndex
+except ModuleNotFoundError:                      # hnswlib ausente
+    import types                                # cria stub mínimo
+    hnswlib = types.SimpleNamespace(Index=type("I", (), {"file_handle_count": staticmethod(lambda: 0)}))
+
+# ---------------------------------------------------------------------------
 import streamlit as st
+import tempfile, os, shutil
 from typing import List
+
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
-import tempfile
-import os
-import shutil
 
-if 'api_key_valid' not in st.session_state:
+# -------------------- estado da sessão / chave OpenAI ----------------------
+if "api_key_valid" not in st.session_state:
     st.session_state.api_key_valid = False
-
-if 'openai_api_key' not in st.session_state:
+if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = ""
 
-# Get OpenAI API key from user
-openai_api_key = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
+api_key_input = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
 
 if st.session_state.openai_api_key and not st.session_state.api_key_valid:
     try:
-        # quick test call
-        OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key).embed_query("test")
-        st.success("API key válida! ✅")
+        OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key).embed_query("ping")
+        st.success("API key válida ✅")
         st.session_state.api_key_valid = True
-    except Exception as e:
-        st.error("Chave inválida ou sem acesso ao modelo. ❌")
+    except Exception:
+        st.error("Chave inválida ou sem acesso ao modelo ❌")
         st.session_state.api_key_valid = False
 
+# -------------------------- adaptador p/ Chroma ----------------------------
 class ChromaEmbeddingFunction:
-    """
-    Pequeno adaptador que torna um objeto `OpenAIEmbeddings`
-    compatível com a interface esperada pelo ChromaDB.
+    def __init__(self, embedding_fn: OpenAIEmbeddings):
+        self.embedding_fn = embedding_fn
 
-    * `__call__(texts)` → lista de embeddings (para ingestão/bulk add)
-    * `embed_query(text)` → embedding único (para buscas)
-    """
-
-    def __init__(self, embedding_function):
-        self.embedding_function = embedding_function  # normalmente OpenAIEmbeddings
-
-    # ---------- Interface usada pelo Chroma durante a ingestão ----------
-    # Chroma passa SEMPRE uma lista de strings!
-    def __call__(self, texts: List[str]) -> List[List[float]]:  # noqa: D401
+    def __call__(self, texts: List[str]):            # ingestão
         if isinstance(texts, str):
-            texts = [texts]  # type: ignore[list-item]
-        return self.embedding_function.embed_documents(list(texts))
+            texts = [texts]
+        return self.embedding_fn.embed_documents(texts)
 
-    # ---------- Conveniência para buscas -------------------------------
-    def embed_query(self, text: str) -> List[float]:  # noqa: D401
-        return self.embedding_function.embed_query(text)
+    def embed_query(self, text: str):                # busca
+        return self.embedding_fn.embed_query(text)
 
-    # Alias for ingestion
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+    # compat extra
+    def embed_documents(self, texts):
         return self.__call__(texts)
 
-st.title("Assistente de analise de documentos PDF")
+# -------------------------- interface Streamlit ----------------------------
+st.title("Assistente de Análise de PDF 📄🤖")
 
-uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
+uploaded = st.file_uploader("Faça upload de um PDF", type=["pdf"])
 
-if uploaded_file:
-    if st.session_state.openai_api_key and st.session_state.api_key_valid:
-        # Clear any existing vector database so each upload starts fresh
+if uploaded:
+    if st.session_state.api_key_valid:
         shutil.rmtree("chroma_db", ignore_errors=True)
         os.makedirs("chroma_db", exist_ok=True)
-        with st.spinner("Ingerindo PDF..."):
-            # write to temp file and load by path
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp_file:
-                tmp_file.write(uploaded_file.getbuffer())
-                tmp_path = tmp_file.name
-            loader = PyPDFLoader(tmp_path)
-            docs = loader.load()
 
-            openai_embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
-            chroma_func = ChromaEmbeddingFunction(openai_embeddings)
+        with st.spinner("Ingerindo PDF…"):
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+                tmp.write(uploaded.getbuffer())
+                tmp_path = tmp.name
 
+            docs = PyPDFLoader(tmp_path).load()
+
+            embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
             vectordb = Chroma.from_documents(
                 docs,
-                embedding=chroma_func,
+                embedding=ChromaEmbeddingFunction(embeddings),
                 persist_directory="chroma_db",
-                collection_name="pdf_collection"
+                collection_name="pdf_collection",
             )
+            st.success("PDF ingerido com sucesso!")
 
-            st.success("PDF ingerido com sucesso! 📄")
-
-        qa_chain = RetrievalQA.from_chain_type(
+        qa = RetrievalQA.from_chain_type(
             llm=ChatOpenAI(openai_api_key=st.session_state.openai_api_key, model_name="gpt-3.5-turbo"),
-            retriever=vectordb.as_retriever()
+            retriever=vectordb.as_retriever(),
         )
 
-        query = st.text_input("Digite sua pergunta sobre o PDF:")
-        if st.button("Perguntar"):
-            if query:
-                response = qa_chain.run(query)
-                st.write("Resposta:")
-                st.write(response)
-            else:
-                st.warning("Por favor, insira uma pergunta.")
+        question = st.text_input("Digite sua pergunta sobre o documento:")
+        if st.button("Perguntar") and question:
+            answer = qa.run(question)
+            st.markdown("**Resposta:**")
+            st.write(answer)
     else:
-        st.warning("Please enter an OpenAI API key.")
+        st.warning("Insira uma chave da OpenAI antes de prosseguir.")
