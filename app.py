@@ -2,7 +2,7 @@ import streamlit as st
 from typing import List
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
+from langchain.vectorstores import FAISS
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
 import tempfile
@@ -25,21 +25,6 @@ if st.session_state.openai_api_key and not st.session_state.api_key_valid:
         st.error("Chave inválida ou sem acesso ao modelo. ❌")
         st.session_state.api_key_valid = False
 
-class ChromaEmbeddingFunction:
-    def __init__(self, embedding_function):
-        self.embedding_function = embedding_function
-
-    def __call__(self, texts: List[str]) -> List[List[float]]:
-        if isinstance(texts, str):
-            texts = [texts]
-        return self.embedding_function.embed_documents(list(texts))
-
-    def embed_query(self, text: str) -> List[float]:
-        return self.embedding_function.embed_query(text)
-
-    def embed_documents(self, texts: List[str]) -> List[List[float]]:
-        return self.__call__(texts)
-
 st.title("Assistente de análise de documentos PDF")
 
 uploaded_file = st.file_uploader("Upload PDF", type=["pdf"])
@@ -55,11 +40,10 @@ if uploaded_file:
             docs = loader.load()
 
             openai_embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
-            chroma_func = ChromaEmbeddingFunction(openai_embeddings)
 
-            vectordb = Chroma.from_documents(
+            vectordb = FAISS.from_documents(
                 docs,
-                embedding=chroma_func
+                embedding=openai_embeddings
             )
 
             st.success("PDF ingerido com sucesso! 📄")
