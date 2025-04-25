@@ -190,3 +190,9 @@ zipp==3.21.0
 zstandard==0.23.0
 chromadb==0.4.24
 hnswlib>=0.7.0,<0.8.0
+streamlit
+chromadb
+langchain-openai
+tiktoken
+flask-cors
+PyPDF2
