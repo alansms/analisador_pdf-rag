@@ -1,5 +1,10 @@
 streamlit==1.44.1
+
+# fornece sqlite ≥ 3.35 para o ChromaDB
 pysqlite3-binary==0.5.2
+
+numpy==1.26.4
+pypdf==4.0.2
 
 openai==1.76.0
 tiktoken==0.9.0
@@ -9,6 +14,3 @@ langchain-openai==0.3.14
 
 chromadb==0.4.24
 hnswlib>=0.7.0,<0.8.0
-
-pypdf==4.0.2
-numpy==1.26.4
