@@ -1,9 +1,8 @@
 streamlit==1.44.1
 
-# garante SQLite 3.43 via pysqlite3 (suporta Py 3.12)
-pysqlite3==0.6.0
+pysqlite3-binary==0.5.2.post3   # wheel com SQLite>=3.35
 
-numpy==1.26.4          # versão < 2 evita deprecações
+numpy==1.26.4
 pypdf==4.0.2
 
 openai==1.76.0
