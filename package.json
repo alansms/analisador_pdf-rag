@@ -1,0 +1,16 @@
+{
+  "name": "assistente-virtual-ia-com-arquitetura-rag-3",
+  "version": "1.0.0",
+  "description": "Um assistente virtual baseado em IA utilizando a arquitetura RAG (Retrieval Augmented Generation) para responder perguntas sobre os avanços mais recentes em processamento de linguagem natural.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  }
+}
