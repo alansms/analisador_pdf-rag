@@ -1,107 +1,115 @@
-# app.py  ―  Streamlit PDF-RAG assistant
-# ---------------------------------------------------------------------------
-# 1) Forçar SQLite ≥ 3.35 (pysqlite3-binary) para o ChromaDB funcionar
-import sys, pysqlite3  # type: ignore
-sys.modules["sqlite3"] = pysqlite3
 
-# 2) Compatibilidade NumPy < 2.0 × ChromaDB
-import numpy as np
-if not hasattr(np, "float_"):  # presente até NumPy < 2.0
-    np.float_ = np.float64     # cria alias esperado pelo Chroma
+import sys, os, shutil, tempfile, types
 
-# 3) Alguns wheels do hnswlib não expõem file_handle_count; “stub” seguro
+# ---- 1 · SQLite >= 3.35 exigido pelo Chroma ---------------------------------
+import pysqlite3                                        # noqa: E402
+sys.modules["sqlite3"] = pysqlite3                      # monkey-patch
+# -----------------------------------------------------------------------------
+
+
+# ---- 2 · hnswlib stub/patch --------------------------------------------------
 try:
-    import hnswlib  # type: ignore
+    import hnswlib                                      # noqa: E402
+
+    # algumas builds tinham apenas método; Chroma espera inteiro
     if not hasattr(hnswlib.Index, "file_handle_count"):
-        class _SafeIndex(hnswlib.Index):         # noqa: D101
-            @staticmethod
-            def file_handle_count() -> int:      # noqa: D401
-                return 0
-        hnswlib.Index = _SafeIndex
-except ModuleNotFoundError:                      # hnswlib ausente
-    import types                                # cria stub mínimo
-    hnswlib = types.SimpleNamespace(Index=type("I", (), {"file_handle_count": staticmethod(lambda: 0)}))
+        hnswlib.Index.file_handle_count = 0
+except ModuleNotFoundError:
+    hnswlib = types.SimpleNamespace(
+        Index=type("Index", (), {"file_handle_count": 0})
+    )
+# -----------------------------------------------------------------------------
 
-# ---------------------------------------------------------------------------
-import streamlit as st
-import tempfile, os, shutil
-from typing import List
 
-from langchain.document_loaders import PyPDFLoader
-from langchain.embeddings import OpenAIEmbeddings
-from langchain.vectorstores import Chroma
-from langchain.chains import RetrievalQA
-from langchain.chat_models import ChatOpenAI
+# ---- 3 · restante do app -----------------------------------------------------
+import streamlit as st                                 # noqa: E402
+from typing import List, Sequence                      # noqa: E402
+from langchain.document_loaders import PyPDFLoader     # noqa: E402
+from langchain.embeddings import OpenAIEmbeddings      # noqa: E402
+from langchain.vectorstores import Chroma              # noqa: E402
+from langchain.chains import RetrievalQA               # noqa: E402
+from langchain.chat_models import ChatOpenAI           # noqa: E402
 
-# -------------------- estado da sessão / chave OpenAI ----------------------
+
+# ---------- Estado ----------------------------------------------------------------
 if "api_key_valid" not in st.session_state:
     st.session_state.api_key_valid = False
 if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = ""
 
-api_key_input = st.text_input("OpenAI API Key", type="password", key="openai_api_key")
 
-if st.session_state.openai_api_key and not st.session_state.api_key_valid:
+# ---------- Header -----------------------------------------------------------------
+st.title("Assistente de Análise de PDFs 📑")
+
+
+# ---------- API key ---------------------------------------------------------------
+key = st.text_input("🔑 OpenAI API Key", type="password", key="openai_api_key")
+
+if key and not st.session_state.api_key_valid:
     try:
-        OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key).embed_query("ping")
-        st.success("API key válida ✅")
+        OpenAIEmbeddings(openai_api_key=key).embed_query("ping")
         st.session_state.api_key_valid = True
+        st.success("API key válida! ✅")
     except Exception:
-        st.error("Chave inválida ou sem acesso ao modelo ❌")
         st.session_state.api_key_valid = False
+        st.error("Chave inválida ou sem acesso aos modelos. ❌")
 
-# -------------------------- adaptador p/ Chroma ----------------------------
+
+# ---------- Adapter ­para Chroma ---------------------------------------------------
 class ChromaEmbeddingFunction:
-    def __init__(self, embedding_fn: OpenAIEmbeddings):
-        self.embedding_fn = embedding_fn
+    """Adapta `OpenAIEmbeddings` à interface esperada pelo Chroma."""
 
-    def __call__(self, texts: List[str]):            # ingestão
-        if isinstance(texts, str):
-            texts = [texts]
-        return self.embedding_fn.embed_documents(texts)
+    def __init__(self, embedder: OpenAIEmbeddings):
+        self._emb = embedder
 
-    def embed_query(self, text: str):                # busca
-        return self.embedding_fn.embed_query(text)
+    # usado em ingestão
+    def __call__(self, texts: Sequence[str]):
+        return self._emb.embed_documents(list(texts))
 
-    # compat extra
-    def embed_documents(self, texts):
-        return self.__call__(texts)
+    # usado em busca
+    def embed_query(self, text: str):
+        return self._emb.embed_query(text)
 
-# -------------------------- interface Streamlit ----------------------------
-st.title("Assistente de Análise de PDF 📄🤖")
+    embed_documents = __call__
 
-uploaded = st.file_uploader("Faça upload de um PDF", type=["pdf"])
+
+# ---------- Upload / ingestão ------------------------------------------------------
+uploaded = st.file_uploader("📄 Envie um PDF", type=["pdf"])
 
 if uploaded:
-    if st.session_state.api_key_valid:
-        shutil.rmtree("chroma_db", ignore_errors=True)
-        os.makedirs("chroma_db", exist_ok=True)
+    if not st.session_state.api_key_valid:
+        st.warning("Insira uma chave API para continuar.")
+        st.stop()
 
-        with st.spinner("Ingerindo PDF…"):
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
-                tmp.write(uploaded.getbuffer())
-                tmp_path = tmp.name
+    shutil.rmtree("chroma_db", ignore_errors=True)
+    os.makedirs("chroma_db", exist_ok=True)
 
-            docs = PyPDFLoader(tmp_path).load()
+    with st.spinner("Ingerindo PDF …"):
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
+            tmp.write(uploaded.getbuffer())
+            path = tmp.name
 
-            embeddings = OpenAIEmbeddings(openai_api_key=st.session_state.openai_api_key)
-            vectordb = Chroma.from_documents(
-                docs,
-                embedding=ChromaEmbeddingFunction(embeddings),
-                persist_directory="chroma_db",
-                collection_name="pdf_collection",
-            )
-            st.success("PDF ingerido com sucesso!")
+        docs = PyPDFLoader(path).load()
 
-        qa = RetrievalQA.from_chain_type(
-            llm=ChatOpenAI(openai_api_key=st.session_state.openai_api_key, model_name="gpt-3.5-turbo"),
-            retriever=vectordb.as_retriever(),
+        embedder = OpenAIEmbeddings(openai_api_key=key)
+        vectordb = Chroma.from_documents(
+            docs,
+            embedding=ChromaEmbeddingFunction(embedder),
+            persist_directory="chroma_db",
+            collection_name="pdf_collection",
         )
 
-        question = st.text_input("Digite sua pergunta sobre o documento:")
-        if st.button("Perguntar") and question:
-            answer = qa.run(question)
-            st.markdown("**Resposta:**")
-            st.write(answer)
-    else:
-        st.warning("Insira uma chave da OpenAI antes de prosseguir.")
+    st.success("PDF ingerido com sucesso! 🚀")
+
+    # ---------- QA ­-------------------------------------------------------------
+    qa_chain = RetrievalQA.from_chain_type(
+        llm=ChatOpenAI(openai_api_key=key, model_name="gpt-3.5-turbo"),
+        retriever=vectordb.as_retriever(),
+    )
+
+    question = st.text_input("❓ Sua pergunta sobre o documento:")
+    if st.button("Perguntar") and question:
+        with st.spinner("Consultando …"):
+            answer = qa_chain.run(question)
+        st.markdown("**Resposta:**")
+        st.write(answer)
