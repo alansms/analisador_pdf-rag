@@ -1,47 +1,45 @@
 # app.py
-# ──────────────────────────────────────────────────────────────────────────────
-# 1. Força SQLite ≥ 3.35 (pysqlite3)                → Chroma em Streamlit Cloud
-# 2. Garante hnswlib.Index.file_handle_count == int → evita TypeError
-# 3. App Streamlit para perguntas sobre PDF usando LangChain + Chroma
-# ──────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Corrige SQLite (<3.35), hnswlib.file_handle_count e passa Settings ao Chroma
+# ─────────────────────────────────────────────────────────────────────────────
 
-# --- 1 · SQLite ----------------------------------------------------------------
-import sys
-import pysqlite3                              # SQLite 3.42 incluído
-sys.modules["sqlite3"] = pysqlite3            # Monkey-patch global
+# ▸ SQLite ≥ 3.35 via pysqlite3
+import sys, types
+import pysqlite3
+sys.modules["sqlite3"] = pysqlite3
 
-# --- 2 · hnswlib ----------------------------------------------------------------
-import types
+# ▸ hnswlib patch (evita TypeError em file_handle_count)
 try:
     import hnswlib
-except ModuleNotFoundError:                   # fallback mínimo se lib ausente
-    hnswlib = types.ModuleType("hnswlib")
-    class _DummyIndex: pass                   # noqa: E306,E302
-    hnswlib.Index = _DummyIndex
+except ModuleNotFoundError:
+    hnswlib = types.ModuleType("hnswlib")       # stub
+    class _DummyIndex: pass
+    hnswlib.Index = _DummyIndex                 # type: ignore
+hnswlib.Index.file_handle_count = 0             # sempre inteiro
 
-# A partir daqui, seja qual for a build, garantimos inteiro
-hnswlib.Index.file_handle_count = 0            # ← fix definitivo
-
-# --- 3 · dependências principais ------------------------------------------------
+# ─ Streamlit / LangChain stack ───────────────────────────────────────────────
 import os, shutil, tempfile
 from typing import List, Sequence
 
 import streamlit as st
+
 from langchain.document_loaders import PyPDFLoader
 from langchain.embeddings import OpenAIEmbeddings
 from langchain.vectorstores import Chroma
 from langchain.chains import RetrievalQA
 from langchain.chat_models import ChatOpenAI
 
+from chromadb.config import Settings            # ← NEW
 
-# ---------- Estado da sessão ----------------------------------------------------
+
+# ╭─ Estado de sessão ───────────────────────────────────────────────────────╮
 if "api_key_valid" not in st.session_state:
     st.session_state.api_key_valid = False
 if "openai_api_key" not in st.session_state:
     st.session_state.openai_api_key = ""
+# ╰──────────────────────────────────────────────────────────────────────────╯
 
 
-# ---------- Cabeçalho -----------------------------------------------------------
 st.title("Assistente de Análise de PDFs 📑")
 
 key = st.text_input("🔑 OpenAI API Key", type="password", key="openai_api_key")
@@ -56,10 +54,8 @@ if key and not st.session_state.api_key_valid:
         st.error("Chave inválida ou sem acesso aos modelos ❌")
 
 
-# ---------- Adaptador p/ Chroma --------------------------------------------------
+# Pequeno adaptador p/ Chroma -------------------------------------------------
 class ChromaEmbeddingFunction:
-    """Adapta `OpenAIEmbeddings` à interface esperada pelo Chroma."""
-
     def __init__(self, embedder: OpenAIEmbeddings):
         self._emb = embedder
 
@@ -72,12 +68,11 @@ class ChromaEmbeddingFunction:
     embed_documents = __call__
 
 
-# ---------- Upload / ingestão ----------------------------------------------------
 uploaded = st.file_uploader("📄 Envie um PDF", type=["pdf"])
 
 if uploaded:
     if not st.session_state.api_key_valid:
-        st.warning("Insira uma chave API para continuar.")
+        st.warning("Insira a chave API antes de prosseguir.")
         st.stop()
 
     # DB fresco a cada upload
@@ -87,29 +82,34 @@ if uploaded:
     with st.spinner("Ingerindo PDF …"):
         with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
             tmp.write(uploaded.getbuffer())
-            path = tmp.name
+            pdf_path = tmp.name
 
-        docs = PyPDFLoader(path).load()
+        docs = PyPDFLoader(pdf_path).load()
 
-        embedder   = OpenAIEmbeddings(openai_api_key=key)
+        embedder = OpenAIEmbeddings(openai_api_key=key)
+        client_settings = Settings(                 # ← FIX principal
+            chroma_db_impl="duckdb+parquet",
+            persist_directory="chroma_db",
+        )
+
         chroma_vec = Chroma.from_documents(
             docs,
             embedding=ChromaEmbeddingFunction(embedder),
-            persist_directory="chroma_db",
+            client_settings=client_settings,
             collection_name="pdf_collection",
         )
 
     st.success("PDF ingerido com sucesso 🚀")
 
-    # ---------- QA ----------------------------------------------------------------
-    qa_chain = RetrievalQA.from_chain_type(
-        llm       = ChatOpenAI(openai_api_key=key, model_name="gpt-3.5-turbo"),
-        retriever = chroma_vec.as_retriever(),
+    # QA ---------------------------------------------------------------------
+    qa = RetrievalQA.from_chain_type(
+        llm=ChatOpenAI(openai_api_key=key, model_name="gpt-3.5-turbo"),
+        retriever=chroma_vec.as_retriever(),
     )
 
     q = st.text_input("❓ Sua pergunta sobre o documento:")
     if st.button("Perguntar") and q:
         with st.spinner("Consultando …"):
-            ans = qa_chain.run(q)
+            ans = qa.run(q)
         st.markdown("**Resposta:**")
         st.write(ans)
